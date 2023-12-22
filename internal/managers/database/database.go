@@ -1,7 +1,7 @@
 package database
 
 import (
-	"github.com/Coop25/memeindex/internal/accessor/database"
+	"github.com/Coop25/the-meme-index/internal/accessor/database"
 )
 
 type DatabaseManager struct {
