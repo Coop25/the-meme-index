@@ -1,4 +1,4 @@
-module memeindex
+module github.com/Coop25/memeindex
 
 go 1.21.5
 
