@@ -1,13 +1,13 @@
 package database
 
 import (
-	"github.com/Coop25/the-meme-index/internal/accessor/database"
+	dbAccessor "github.com/Coop25/the-meme-index/internal/accessors/database"
 )
 
-type DatabaseManager struct {
-	fileAccessor accessor.FileAccessor
+type databaseManager struct {
+	fileAccessor dbAccessor.DatabaseAccessor
 }
 
-func NewFileManager(fileAccessor accessor.FileAccessor) *DatabaseManager {
-	return &DatabaseManager{fileAccessor: fileAccessor}
+func New(fileAccessor dbAccessor.DatabaseAccessor) DatabaseManager {
+	return &databaseManager{fileAccessor: fileAccessor}
 }

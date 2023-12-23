@@ -1,0 +1,196 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/gorilla/mux"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
+)
+
+const (
+	dbDriver = "postgres"
+	dbSource = "user=username dbname=mydatabase sslmode=disable" // replace with your PostgreSQL connection string
+)
+
+func main() {
+	// Connect to the PostgreSQL database
+	db, err := sqlx.Connect(dbDriver, dbSource)
+	if err != nil {
+		log.Fatal("Error connecting to the database:", err)
+	}
+	defer db.Close()
+
+	// Create a table to store files if it doesn't exist
+	createTableQuery := `
+	CREATE TABLE IF NOT EXISTS files (
+		id SERIAL PRIMARY KEY,
+		name VARCHAR(255),
+		content BYTEA,
+		tags VARCHAR(255),
+		url VARCHAR(255)
+	);
+	`
+	if _, err := db.Exec(createTableQuery); err != nil {
+		log.Fatal("Error creating table:", err)
+	}
+
+	// Setup routes
+	r := mux.NewRouter()
+	r.HandleFunc("/upload", uploadHandler(db)).Methods("POST")
+	r.HandleFunc("/files/{id:[0-9]+}", getFileHandler(db)).Methods("GET")
+	r.HandleFunc("/random", getRandomFileHandler(db)).Methods("GET")
+	r.HandleFunc("/search", searchFilesHandler(db)).Methods("GET")
+
+	// Start the web server
+	port := "8080"
+	fmt.Printf("Server listening on port %s...\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+
+func uploadHandler(db *sqlx.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Parse the form fields
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, "Error parsing form", http.StatusBadRequest)
+			return
+		}
+
+		// Parse the file from the request
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "Error parsing file from request", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		// Read the file content
+		content, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Error reading file content", http.StatusInternalServerError)
+			return
+		}
+
+		// Get tags and URL from the form
+		tags := r.FormValue("tags")
+		url := r.FormValue("url")
+
+		// Insert the file into the database
+		insertQuery := `
+		INSERT INTO files (name, content, tags, url) VALUES ($1, $2, $3, $4) RETURNING id;
+		`
+		var fileID int
+		err = db.QueryRow(insertQuery, header.Filename, content, tags, url).Scan(&fileID)
+		if err != nil {
+			http.Error(w, "Error inserting file into the database", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Fprintf(w, "File successfully stored in the database with ID: %d\n", fileID)
+	}
+}
+
+func getFileHandler(db *sqlx.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get the file ID from the request parameters
+		vars := mux.Vars(r)
+		fileID, err := strconv.Atoi(vars["id"])
+		if err != nil {
+			http.Error(w, "Invalid file ID", http.StatusBadRequest)
+			return
+		}
+
+		// Retrieve the file content from the database
+		query := `
+		SELECT name, content, tags, url FROM files WHERE id = $1;
+		`
+		var fileName string
+		var fileContent []byte
+		var tags string
+		var url string
+		err = db.QueryRow(query, fileID).Scan(&fileName, &fileContent, &tags, &url)
+		if err != nil {
+			http.Error(w, "Error retrieving file from the database", http.StatusInternalServerError)
+			return
+		}
+
+		// Set the appropriate headers for file download
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(fileContent)))
+
+		// Write the file content to the response
+		if _, err := w.Write(fileContent); err != nil {
+			http.Error(w, "Error writing file to response", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Fprintf(w, "Tags: %s\nURL: %s\n", tags, url)
+	}
+}
+
+func getRandomFileHandler(db *sqlx.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Retrieve a random file from the database
+		query := `
+		SELECT id, name FROM files ORDER BY random() LIMIT 1;
+		`
+		var fileID int
+		var fileName string
+		err := db.QueryRow(query).Scan(&fileID, &fileName)
+		if err != nil {
+			http.Error(w, "Error retrieving random file from the database", http.StatusInternalServerError)
+			return
+		}
+
+		// Redirect to the endpoint that serves the specific file
+		http.Redirect(w, r, fmt.Sprintf("/files/%d", fileID), http.StatusFound)
+	}
+}
+
+func searchFilesHandler(db *sqlx.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get tags from the query parameters
+		tags := r.URL.Query().Get("tags")
+		if tags == "" {
+			http.Error(w, "Tags parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		// Split the tags string into individual tags
+		tagList := strings.Split(tags, ",")
+
+		// Build the SQL query for searching files by tags
+		query := `
+		SELECT id, name FROM files WHERE tags @> $1;
+		`
+		var matchingFiles []struct {
+			ID   int    `db:"id"`
+			Name string `db:"name"`
+		}
+		err := db.Select(&matchingFiles, query, pq.Array(tagList))
+		if err != nil {
+			http.Error(w, "Error searching files in the database", http.StatusInternalServerError)
+			return
+		}
+
+		// Generate a response with the matching file names
+		var response string
+		for _, file := range matchingFiles {
+			response += fmt.Sprintf("File ID: %d, Name: %s\n", file.ID, file.Name)
+		}
+
+		if response == "" {
+			response = "No matching files found."
+		}
+
+		w.Write([]byte(response))
+	}
+}

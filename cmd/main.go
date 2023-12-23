@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"memeindex/internal/accessor"
-	manager "memeindex/internal/managers/database"
+	dbAccessor "github.com/Coop25/the-meme-index/internal/accessors/database"
+	dbManager "github.com/Coop25/the-meme-index/internal/managers/database"
 
 	"github.com/gorilla/mux"
 
@@ -27,16 +27,33 @@ func main() {
 	}
 	defer db.Close()
 
-	fileAccessor := accessor.NewFileAccessor(db)
-	fileManager := manager.NewFileManager(fileAccessor)
+	// Execute the CREATE TABLE IF NOT EXISTS statement
+	createTableQuery := `
+		CREATE TABLE IF NOT EXISTS files (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			content BYTEA,
+			tags TEXT[],
+			url VARCHAR(255),
+			description TEXT
+		);
+	`
+
+	_, err = db.Exec(createTableQuery)
+	if err != nil {
+		log.Fatal("Error creating table:", err)
+	}
+
+	fileAccessor := dbAccessor.New(db)
+	fileManager := dbManager.New(fileAccessor)
 
 	// Setup routes
 	r := mux.NewRouter()
 
 	r.HandleFunc("/upload", uploadHandler(fileManager)).Methods("POST")
 	r.HandleFunc("/files/{id:[0-9]+}", getFileHandler(fileManager)).Methods("GET")
-	r.HandleFunc("/random", getRandomFileHandler(fileManager)).Methods("GET")
-	r.HandleFunc("/search", searchFilesHandler(fileManager)).Methods("GET")
+	// r.HandleFunc("/random", getRandomFileHandler(fileManager)).Methods("GET")
+	// r.HandleFunc("/search", searchFilesHandler(fileManager)).Methods("GET")
 
 	// Start the web server
 	port := "8080"
